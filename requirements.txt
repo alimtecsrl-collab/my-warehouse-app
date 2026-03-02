@@ -1,4 +1,7 @@
 streamlit
-streamlit-gsheets
+st-gsheets-connection
 pandas
 pyTelegramBotAPI
+qrcode[pil]
+opencv-python-headless
+numpy
