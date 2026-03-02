@@ -1,69 +1,51 @@
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 import telebot
 import time
+import qrcode
+from PIL import Image
+import cv2
+import numpy as np
+from io import BytesIO
 
-# --- 1. КОНФИГУРАЦИЯ СТРАНИЦЫ ---
+# --- 1. КОНФИГУРАЦИЯ ---
 st.set_page_config(page_title="Склад Pro Cloud", layout="wide", page_icon="📦")
 
-# Цветовая схема и стили CSS
+# Стили
 st.markdown("""
     <style>
-    .stButton>button { width: 100%; border-radius: 5px; height: 3em; }
-    .stDataFrame { border: 1px solid #f0f2f6; border-radius: 10px; }
+    .stButton>button { width: 100%; border-radius: 8px; font-weight: bold; }
     </style>
     """, unsafe_allow_html=True)
 
-# Структура таблиц
-SCHEMAS = {
-    "batches": ["id", "product_name", "batch_number", "expiry_date"],
-    "transactions": ["id", "batch_id", "type", "quantity", "buyer", "date", "month", "year"],
-    "products": ["name"],
-    "clients": ["name"]
-}
+# Инициализация session_state для хранения результата сканирования
+if 'scanned_batch_id' not in st.session_state:
+    st.session_state.scanned_batch_id = None
 
-# Данные по умолчанию (ваши)
-DEFAULT_URL = "https://docs.google.com/spreadsheets/d/1d7YQfD2Ucv1FLWDJY_Qkd7b0-0H_Akro6eVl6x4NDSk/edit?usp=sharing"
-DEFAULT_TOKEN = "8538139467:AAF6xq3ezQnTDt32OPAfi68Z7r3ZZMx2LVc"
-DEFAULT_CHAT_ID = "5974057865"
+# --- ПОДКЛЮЧЕНИЕ ---
+# ⚠️ Вставь свои данные или используй st.secrets
+SPREADSHEET_URL = st.secrets.get("SPREADSHEET_URL", "ТВОЯ_ССЫЛКА")
+TELEGRAM_TOKEN = st.secrets.get("TELEGRAM_TOKEN", "ТВОЙ_ТОКЕН")
+TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "ТВОЙ_CHAT_ID")
 
-# Сайдбар
-st.sidebar.title("⚙️ Настройки")
-SPREADSHEET_URL = st.sidebar.text_input("URL Таблицы", value=DEFAULT_URL)
-TELEGRAM_TOKEN = st.sidebar.text_input("Bot Token", value=DEFAULT_TOKEN, type="password")
-TELEGRAM_CHAT_ID = st.sidebar.text_input("Chat ID", value=DEFAULT_CHAT_ID)
-
-# Инициализация бота
 bot = None
 if TELEGRAM_TOKEN:
-    try:
-        bot = telebot.TeleBot(TELEGRAM_TOKEN)
-    except Exception: pass
+    try: bot = telebot.TeleBot(TELEGRAM_TOKEN)
+    except: pass
 
-# Подключение к Google Sheets
-try:
-    conn = st.connection("gsheets", type=GSheetsConnection)
-except Exception as e:
-    st.error(f"Ошибка подключения к GSheets: {e}")
-    st.stop()
+conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- 2. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+# --- 2. ФУНКЦИИ ---
 
 def get_data(sheet_name):
-    """Безопасное чтение данных"""
     try:
         df = conn.read(spreadsheet=SPREADSHEET_URL, worksheet=sheet_name, ttl=0)
-        df = df.dropna(how='all')
-        if df.empty or not set(SCHEMAS[sheet_name]).issubset(df.columns):
-            return pd.DataFrame(columns=SCHEMAS[sheet_name])
-        return df
-    except Exception:
-        return pd.DataFrame(columns=SCHEMAS.get(sheet_name, []))
+        return df.dropna(how='all')
+    except: return pd.DataFrame()
 
 def safe_update(sheet_name, df):
-    """Обновление данных в облаке"""
     try:
         conn.update(spreadsheet=SPREADSHEET_URL, worksheet=sheet_name, data=df)
         st.cache_data.clear()
@@ -72,190 +54,194 @@ def safe_update(sheet_name, df):
         st.error(f"Ошибка записи: {e}")
         return False
 
+def generate_qr(batch_id, product_name):
+    """Генерирует QR код с ID партии"""
+    # Мы кодируем строку вида "BATCH:123"
+    data = f"BATCH:{batch_id}"
+    qr = qrcode.QRCode(version=1, box_size=10, border=5)
+    qr.add_data(data)
+    qr.make(fit=True)
+    img = qr.make_image(fill='black', back_color='white')
+    return img
+
+def decode_qr(image_buffer):
+    """Декодирует QR из фото"""
+    try:
+        # Конвертация в формат для OpenCV
+        bytes_data = image_buffer.getvalue()
+        cv_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
+        
+        # Детектор QR
+        detector = cv2.QRCodeDetector()
+        data, bbox, _ = detector.detectAndDecode(cv_img)
+        
+        if data and "BATCH:" in data:
+            return int(data.split(":")[1])
+    except Exception as e:
+        st.error(f"Ошибка чтения QR: {e}")
+    return None
+
 def get_inventory():
-    """Расчет текущих остатков"""
     df_b = get_data("batches")
     df_t = get_data("transactions")
+    if df_b.empty: return pd.DataFrame()
     
-    if df_b.empty: 
-        return pd.DataFrame(columns=['id', 'Товар', 'Партия', 'Срок годности', 'Остаток'])
-    
-    # Принудительно конвертируем ID в числа для корректного слияния
     df_b['id'] = pd.to_numeric(df_b['id'], errors='coerce')
     
     if not df_t.empty:
         df_t['quantity'] = pd.to_numeric(df_t['quantity'], errors='coerce').fillna(0)
         df_t['batch_id'] = pd.to_numeric(df_t['batch_id'], errors='coerce')
-        
-        # Расчет: IN = +, OUT = -
         df_t['calc_qty'] = df_t.apply(lambda x: x['quantity'] if x['type'] == 'IN' else -x['quantity'], axis=1)
         balance = df_t.groupby('batch_id')['calc_qty'].sum().reset_index()
-        
-        inventory = pd.merge(df_b, balance, left_on='id', right_on='batch_id', how='left')
-        inventory['calc_qty'] = inventory['calc_qty'].fillna(0)
+        inv = pd.merge(df_b, balance, left_on='id', right_on='batch_id', how='left')
+        inv['calc_qty'] = inv['calc_qty'].fillna(0)
     else:
-        inventory = df_b.copy()
-        inventory['calc_qty'] = 0.0
-
-    return inventory.rename(columns={
-        'product_name': 'Товар', 'batch_number': 'Партия', 
-        'expiry_date': 'Срок годности', 'calc_qty': 'Остаток'
-    })
-
-def style_inventory(row):
-    """Улучшенная контрастная стилизация"""
-    try:
-        exp = pd.to_datetime(row['Срок годности']).date()
-        days = (exp - date.today()).days
-        # Просрочка: Яркий красный фон, Белый текст
-        if days < 0:
-            return ['background-color: #d32f2f; color: white; font-weight: bold'] * len(row)
-        # 7 дней и меньше: Желтый фон, Черный текст
-        if days <= 7:
-            return ['background-color: #fbc02d; color: black; font-weight: bold'] * len(row)
-    except: pass
-    return [''] * len(row)
+        inv = df_b.copy()
+        inv['calc_qty'] = 0.0
+        
+    return inv.rename(columns={'product_name': 'Товар', 'batch_number': 'Партия', 'expiry_date': 'Срок годности', 'calc_qty': 'Остаток'})
 
 # --- 3. ИНТЕРФЕЙС ---
+menu = ["📊 Склад", "📥 Приемка", "📤 Продажа (Сканер)"]
+choice = st.sidebar.radio("Меню", menu)
 
-menu = ["📊 Склад", "📥 Приход", "📤 Расход", "📈 Аналитика"]
-choice = st.sidebar.radio("Навигация", menu)
-
-# --- РАЗДЕЛ: СКЛАД ---
+# --- СКЛАД (С ГЕНЕРАЦИЕЙ QR) ---
 if choice == "📊 Склад":
-    st.header("📦 Текущие остатки")
+    st.title("📦 Остатки и QR-коды")
     df = get_inventory()
     
     if not df.empty:
-        st.dataframe(
-            df[['id', 'Товар', 'Партия', 'Срок годности', 'Остаток']].style.apply(style_inventory, axis=1),
-            use_container_width=True, height=450
-        )
+        # Показываем таблицу
+        st.dataframe(df[['id', 'Товар', 'Партия', 'Остаток', 'Срок годности']], use_container_width=True)
         
-        if st.button("📢 Отправить отчет о сроках в Telegram"):
-            # Короткая логика алертов
-            today = date.today()
-            alerts = []
-            for _, r in df.iterrows():
-                try:
-                    exp = pd.to_datetime(r['Срок годности']).date()
-                    if r['Остаток'] > 0 and (exp - today).days <= 7:
-                        icon = "🚨" if exp < today else "⚠️"
-                        alerts.append(f"{icon} *{r['Товар']}* ({r['Партия']})\nОстаток: {r['Остаток']} | До: {exp}")
-                except: continue
+        st.divider()
+        st.subheader("🖨️ Распечатать QR для товара")
+        
+        # Выбор товара для печати этикетки
+        opts = df.apply(lambda x: f"ID:{x['id']} | {x['Товар']} ({x['Партия']})", axis=1).tolist()
+        sel_qr = st.selectbox("Выберите партию", opts)
+        
+        if sel_qr:
+            b_id = int(sel_qr.split("|")[0].replace("ID:", "").strip())
+            p_name = sel_qr.split("|")[1].strip()
             
-            if alerts and bot:
-                bot.send_message(TELEGRAM_CHAT_ID, "🛑 *ВНИМАНИЕ: СРОКИ!*\n\n" + "\n\n".join(alerts), parse_mode="Markdown")
-                st.success("Отчет отправлен!")
-            else:
-                st.info("Проблемных товаров не найдено.")
-    else:
-        st.info("На складе пока ничего нет.")
+            # Показываем QR
+            col1, col2 = st.columns([1, 4])
+            with col1:
+                img = generate_qr(b_id, p_name)
+                # Конвертация для Streamlit
+                buf = BytesIO()
+                img.save(buf)
+                st.image(buf, caption=f"Batch #{b_id}", width=150)
+            with col2:
+                st.info(f"Наведите камеру телефона на этот код в разделе 'Продажа', чтобы быстро найти товар: **{p_name}**")
 
-# --- РАЗДЕЛ: ПРИХОД ---
-elif choice == "📥 Приход":
-    st.header("🚚 Приход товара")
+# --- ПРИЕМКА ---
+elif choice == "📥 Приемка":
+    st.title("🚚 Приход товара")
+    # ... (код приемки, как в прошлой версии)
     df_prod = get_data("products")
-    options = ["+ Новый товар..."] + (df_prod['name'].tolist() if not df_prod.empty else [])
+    p_list = ["+ Новый..."] + (df_prod['name'].tolist() if not df_prod.empty else [])
     
-    with st.form("in_form", clear_on_submit=True):
-        p_sel = st.selectbox("Товар", options)
+    with st.form("in_form"):
+        p_sel = st.selectbox("Товар", p_list)
         p_new = st.text_input("Название (если новый)")
         col1, col2 = st.columns(2)
         b_num = col1.text_input("Партия")
-        qty = col1.number_input("Количество", min_value=0.1, step=1.0, value=1.0)
-        exp = col2.date_input("Годен до", min_value=date.today())
+        qty = col1.number_input("Кол-во", 1.0)
+        exp = col2.date_input("Годен до")
         
-        if st.form_submit_button("✅ Принять"):
-            final_name = p_new if p_sel == "+ Новый товар..." else p_sel
+        if st.form_submit_button("Сохранить"):
+            final_name = p_new if p_sel == "+ Новый..." else p_sel
             if final_name and b_num:
-                # 1. Товар
-                if p_sel == "+ Новый товар...":
+                if p_sel == "+ Новый...":
                     safe_update("products", pd.concat([df_prod, pd.DataFrame([{"name": final_name}])], ignore_index=True))
-                # 2. Партия
+                
                 df_b = get_data("batches")
                 new_id = 1 if df_b.empty else int(pd.to_numeric(df_b['id']).max()) + 1
                 new_batch = pd.DataFrame([{"id": new_id, "product_name": final_name, "batch_number": b_num, "expiry_date": str(exp)}])
                 safe_update("batches", pd.concat([df_b, new_batch], ignore_index=True))
-                # 3. Транзакция
+                
                 df_t = get_data("transactions")
-                t_id = 1 if df_t.empty else int(pd.to_numeric(df_t['id']).max()) + 1
-                new_trans = pd.DataFrame([{
-                    "id": t_id, "batch_id": new_id, "type": "IN", "quantity": float(qty),
-                    "buyer": "СКЛАД", "date": str(date.today()), "month": date.today().month, "year": date.today().year
-                }])
-                if safe_update("transactions", pd.concat([df_t, new_trans], ignore_index=True)):
-                    st.success(f"Принято: {final_name} — {qty} шт.")
-                    time.sleep(1)
-                    st.rerun()
+                new_t = pd.DataFrame([{"id": 1 if df_t.empty else int(pd.to_numeric(df_t['id']).max()) + 1, "batch_id": new_id, "type": "IN", "quantity": qty, "buyer": "Склад", "date": str(date.today()), "month": date.today().month, "year": date.today().year}])
+                safe_update("transactions", pd.concat([df_t, new_t], ignore_index=True))
+                
+                # Сразу показываем QR созданной партии
+                st.success(f"Создано! Партия #{new_id}")
+                qr_img = generate_qr(new_id, final_name)
+                buf = BytesIO()
+                qr_img.save(buf)
+                st.image(buf, caption=f"QR для {final_name}", width=150)
 
-# --- РАЗДЕЛ: РАСХОД ---
-elif choice == "📤 Расход":
-    st.header("💸 Расход (Продажа)")
+# --- ПРОДАЖА (СО СКАНЕРОМ) ---
+elif choice == "📤 Продажа (Сканер)":
+    st.title("💸 Продажа")
+    
     df_inv = get_inventory()
     df_avail = df_inv[df_inv['Остаток'] > 0] if not df_inv.empty else pd.DataFrame()
     
+    # 1. БЛОК СКАНИРОВАНИЯ
+    with st.expander("📷 Сканировать QR-код (Нажмите чтобы открыть камеру)", expanded=True):
+        img_file = st.camera_input("Наведите камеру на QR товара")
+        
+        if img_file is not None:
+            # Пытаемся распознать
+            detected_id = decode_qr(img_file)
+            if detected_id:
+                # Проверяем, есть ли такой ID на складе
+                if detected_id in df_avail['id'].values:
+                    st.session_state.scanned_batch_id = detected_id
+                    st.success(f"Товар найден! ID партии: {detected_id}")
+                else:
+                    st.error(f"Товар с ID {detected_id} не найден или закончился.")
+            else:
+                st.warning("QR-код не распознан. Попробуйте еще раз.")
+
+    # 2. ФОРМА ПРОДАЖИ
     if not df_avail.empty:
         df_clients = get_data("clients")
-        c_options = ["+ Новый клиент..."] + (df_clients['name'].tolist() if not df_clients.empty else [])
+        c_opts = ["+ Новый..."] + (df_clients['name'].tolist() if not df_clients.empty else [])
         
-        with st.form("out_form", clear_on_submit=True):
-            items = df_avail.apply(lambda x: f"ID:{x['id']} | {x['Товар']} ({x['Партия']}) | Доступно: {x['Остаток']}", axis=1).tolist()
-            sel_item = st.selectbox("Выберите товар", items)
-            c_sel = st.selectbox("Клиент", c_options)
-            c_new = st.text_input("Имя клиента (если новый)")
-            qty_out = st.number_input("Количество к продаже", min_value=0.1, step=1.0, value=1.0)
+        # Формируем список. Если был скан, находим нужный индекс
+        options = df_avail.apply(lambda x: f"ID:{x['id']} | {x['Товар']} | Остаток: {x['Остаток']}", axis=1).tolist()
+        
+        # ЛОГИКА АВТОВЫБОРА ПО СКАНИРОВАНИЮ
+        index_to_select = 0
+        if st.session_state.scanned_batch_id:
+            for i, opt in enumerate(options):
+                if f"ID:{st.session_state.scanned_batch_id} " in opt:
+                    index_to_select = i
+                    break
+        
+        with st.form("sale_form"):
+            st.write("### Оформление")
+            sel_item = st.selectbox("Товар", options, index=index_to_select)
             
-            if st.form_submit_button("🔥 Оформить расход"):
-                # Парсинг ID и лимита
-                b_id = int(float(sel_item.split("|")[0].replace("ID:", "").strip()))
-                max_stock = float(sel_item.split("Доступно:")[1].strip())
-                final_client = c_new if c_sel == "+ Новый клиент..." else c_sel
-                
-                if final_client and 0 < qty_out <= max_stock:
-                    if c_sel == "+ Новый клиент...":
-                        safe_update("clients", pd.concat([df_clients, pd.DataFrame([{"name": final_client}])], ignore_index=True))
-                    
-                    df_t = get_data("transactions")
-                    t_id = 1 if df_t.empty else int(pd.to_numeric(df_t['id']).max()) + 1
-                    new_sale = pd.DataFrame([{
-                        "id": t_id, "batch_id": b_id, "type": "OUT", "quantity": float(qty_out),
-                        "buyer": final_client, "date": str(date.today()), 
-                        "month": date.today().month, "year": date.today().year
-                    }])
-                    if safe_update("transactions", pd.concat([df_t, new_sale], ignore_index=True)):
-                        st.success(f"Продано {qty_out} шт. ({final_client})")
-                        time.sleep(1)
-                        st.rerun()
-                else:
-                    st.error(f"Недостаточно товара! (В наличии: {max_stock})")
-    else:
-        st.warning("Нет товаров в наличии.")
+            # Кнопка сброса скана (чтобы можно было выбрать руками другой товар)
+            if st.session_state.scanned_batch_id:
+                 st.info("💡 Товар выбран автоматически по QR-коду.")
 
-# --- РАЗДЕЛ: АНАЛИТИКА ---
-elif choice == "📈 Аналитика":
-    st.header("📊 Аналитика")
-    df_t = get_data("transactions")
-    df_b = get_data("batches")
-    
-    if not df_t.empty and not df_b.empty:
-        # Принудительная конвертация для объединения
-        df_t['batch_id'] = pd.to_numeric(df_t['batch_id'], errors='coerce')
-        df_b['id'] = pd.to_numeric(df_b['id'], errors='coerce')
-        
-        full = pd.merge(df_t, df_b[['id', 'product_name']], left_on='batch_id', right_on='id', how='left')
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("Топ покупателей")
-            sales = full[full['type'] == 'OUT']
-            if not sales.empty:
-                st.bar_chart(sales.groupby('buyer')['quantity'].sum())
-        with col2:
-            st.subheader("Активность по датам")
-            st.line_chart(full.groupby('date')['quantity'].count())
+            c_sel = st.selectbox("Клиент", c_opts)
+            c_new = st.text_input("Имя клиента (если новый)")
+            qty = st.number_input("Количество", 1.0)
             
-        st.subheader("Последние операции")
-        st.dataframe(full[['date', 'product_name', 'type', 'quantity', 'buyer']].sort_values(by='date', ascending=False), use_container_width=True)
-    else:
-        st.info("Данных для анализа пока нет.")
+            if st.form_submit_button("🔥 Продать"):
+                # Логика продажи (как раньше)
+                b_id = int(sel_item.split("|")[0].replace("ID:", "").strip())
+                max_qty = float(sel_item.split("Остаток:")[1].strip())
+                final_client = c_new if c_sel == "+ Новый..." else c_sel
+                
+                if qty <= max_qty and final_client:
+                    if c_sel == "+ Новый...":
+                        safe_update("clients", pd.concat([df_clients, pd.DataFrame([{"name": final_client}])], ignore_index=True))
+                        
+                    df_t = get_data("transactions")
+                    new_t = pd.DataFrame([{"id": 1 if df_t.empty else int(pd.to_numeric(df_t['id']).max()) + 1, "batch_id": b_id, "type": "OUT", "quantity": qty, "buyer": final_client, "date": str(date.today()), "month": date.today().month, "year": date.today().year}])
+                    safe_update("transactions", pd.concat([df_t, new_t], ignore_index=True))
+                    
+                    st.session_state.scanned_batch_id = None # Сброс скана
+                    st.success("Продано!")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error("Ошибка (кол-во или имя клиента)")
