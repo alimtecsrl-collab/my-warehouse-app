@@ -111,7 +111,7 @@ def style_inventory(row):
         if days < 0:
             return ['background-color: #d32f2f; color: white; font-weight: bold'] * len(row)
         # 7 дней и меньше: Желтый фон, Черный текст
-        if days <= 7:
+        if days <= 30:
             return ['background-color: #fbc02d; color: black; font-weight: bold'] * len(row)
     except: pass
     return [''] * len(row)
@@ -139,7 +139,7 @@ if choice == "📊 Склад":
             for _, r in df.iterrows():
                 try:
                     exp = pd.to_datetime(r['Срок годности']).date()
-                    if r['Остаток'] > 0 and (exp - today).days <= 7:
+                    if r['Остаток'] > 0 and (exp - today).days <= 30:
                         icon = "🚨" if exp < today else "⚠️"
                         alerts.append(f"{icon} *{r['Товар']}* ({r['Партия']})\nОстаток: {r['Остаток']} | До: {exp}")
                 except: continue
@@ -181,7 +181,7 @@ elif choice == "📥 Приход":
                 df_t = get_data("transactions")
                 t_id = 1 if df_t.empty else int(pd.to_numeric(df_t['id']).max()) + 1
                 new_trans = pd.DataFrame([{
-                    "id": t_id, "batch_id": new_id, "type": "IN", "quantity": float(qty),
+                    "id": t_id, "batch_id": new_id, "type": "IN", "quantity": round(float(qty), 2),
                     "buyer": "СКЛАД", "date": str(date.today()), "month": date.today().month, "year": date.today().year
                 }])
                 if safe_update("transactions", pd.concat([df_t, new_trans], ignore_index=True)):
@@ -258,4 +258,5 @@ elif choice == "📈 Аналитика":
         st.subheader("Последние операции")
         st.dataframe(full[['date', 'product_name', 'type', 'quantity', 'buyer']].sort_values(by='date', ascending=False), use_container_width=True)
     else:
+
         st.info("Данных для анализа пока нет.")
