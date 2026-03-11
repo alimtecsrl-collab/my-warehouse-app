@@ -57,7 +57,6 @@ except Exception as e:
 # --- 2. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
 def get_data(sheet_name):
-def get_data(sheet_name):
     try:
         # ttl=0 заставляет программу каждый раз запрашивать свежие данные
         df = conn.read(spreadsheet=SPREADSHEET_URL, worksheet=sheet_name, ttl=0)
@@ -486,6 +485,7 @@ elif choice == "📈 Аналитика":
 
     else:
         st.info("Данных для финансового анализа пока нет. Проведите первую продажу с указанием цены.")
+
 
 
 
