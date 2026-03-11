@@ -4,6 +4,11 @@ import pandas as pd
 from datetime import datetime, date, timedelta
 import telebot
 import time
+import qrcode
+from io import BytesIO
+import cv2
+import numpy as np
+from PIL import Image, ImageDraw
 
 # --- 1. КОНФИГУРАЦИЯ СТРАНИЦЫ ---
 st.set_page_config(page_title="Склад Pro Cloud", layout="wide", page_icon="📦")
@@ -115,7 +120,59 @@ def style_inventory(row):
             return ['background-color: #fbc02d; color: black; font-weight: bold'] * len(row)
     except: pass
     return [''] * len(row)
+def generate_qr(data_text):
+    """Создает QR-код, содержащий только ID"""
+    qr = qrcode.QRCode(version=1, box_size=10, border=2)
+    # Очищаем ID от .0, чтобы сканер не путался
+    clean_id = str(data_text).split('.')[0]
+    qr.add_data(clean_id)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
 
+def read_qr_from_image(image_file):
+    """Распознает QR-код с фотографии с камеры"""
+    try:
+        img = Image.open(image_file)
+        img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+        detector = cv2.QRCodeDetector()
+        data, _, _ = detector.detectAndDecode(img_cv)
+        return data
+    except:
+        return None
+
+def generate_print_sheet(df_selected):
+    """Собирает выбранные товары на один лист PNG для печати"""
+    qr_w, qr_h = 250, 250
+    padding = 60
+    cols = 3
+    rows = (len(df_selected) + cols - 1) // cols
+    sheet_w = (qr_w + padding) * cols + padding
+    sheet_h = (qr_h + padding + 120) * rows + padding
+    
+    canvas = Image.new('RGB', (sheet_w, sheet_h), 'white')
+    draw = ImageDraw.Draw(canvas)
+    
+    for i, (_, row) in enumerate(df_selected.iterrows()):
+        clean_id = str(row['id']).split('.')[0]
+        qr_bits = generate_qr(clean_id)
+        qr_img = Image.open(BytesIO(qr_bits)).resize((qr_w, qr_h))
+        
+        c, r = i % cols, i // cols
+        x = padding + c * (qr_w + padding)
+        y = padding + r * (qr_h + padding + 120)
+        
+        canvas.paste(qr_img, (x, y))
+        # Текст под кодом (ID, Название, Партия, Срок)
+        info_text = f"ID: {clean_id}\n{row['Товар'][:18]}\nПартия: {row['Партия'][:15]}\nДо: {row['Срок годности']}"
+        draw.text((x, y + qr_h + 5), info_text, fill="black")
+        
+    buf = BytesIO()
+    canvas.save(buf, format="PNG")
+    return buf.getvalue()
+    
 # --- 3. ИНТЕРФЕЙС ---
 
 menu = ["📊 Склад", "📥 Приход", "📤 Расход", "📈 Аналитика"]
@@ -127,15 +184,33 @@ if choice == "📊 Склад":
     df = get_inventory()
     
     if not df.empty:
-        st.dataframe(
-            df[['id', 'Товар', 'Партия', 'Срок годности', 'Остаток']]
-            .style.apply(style_inventory, axis=1)
-            .format({"Остаток": "{:.2f}"}), # Принудительно показываем .00
-            use_container_width=True, height=450
+        st.subheader("Выберите товары для печати QR-кодов:")
+        # Создаем копию для редактора с колонкой "Печать"
+        df_for_edit = df.copy()
+        df_for_edit.insert(0, "Печать", False)
+        
+        # Интерактивная таблица
+        edited_df = st.data_editor(
+            df_for_edit[['Печать', 'id', 'Товар', 'Партия', 'Срок годности', 'Остаток']],
+            hide_index=True,
+            column_config={"Печать": st.column_config.CheckboxColumn("Печать", default=False)},
+            use_container_width=True,
+            key="inventory_editor"
         )
         
+        # Фильтруем то, что пользователь отметил галочкой
+        to_print = edited_df[edited_df["Печать"] == True]
+        
+        if not to_print.empty:
+            if st.button(f"📄 Сформировать лист QR для {len(to_print)} поз.", type="primary"):
+                sheet = generate_print_sheet(to_print)
+                st.image(sheet, caption="Лист для печати")
+                st.download_button("📥 Скачать файл для печати", data=sheet, file_name=f"qr_labels_{date.today()}.png")
+
+        st.markdown("---")
+        # Ваша кнопка отчета в Telegram
         if st.button("📢 Отправить отчет о сроках в Telegram"):
-            # Короткая логика алертов
+            # (Тут остается ваш оригинальный код отправки в телеграм)
             today = date.today()
             alerts = []
             for _, r in df.iterrows():
@@ -145,12 +220,9 @@ if choice == "📊 Склад":
                         icon = "🚨" if exp < today else "⚠️"
                         alerts.append(f"{icon} *{r['Товар']}* ({r['Партия']})\nОстаток: {r['Остаток']} | До: {exp}")
                 except: continue
-            
             if alerts and bot:
                 bot.send_message(TELEGRAM_CHAT_ID, "🛑 *ВНИМАНИЕ: СРОКИ!*\n\n" + "\n\n".join(alerts), parse_mode="Markdown")
                 st.success("Отчет отправлен!")
-            else:
-                st.info("Проблемных товаров не найдено.")
     else:
         st.info("На складе пока ничего нет.")
 
@@ -218,39 +290,56 @@ elif choice == "📤 Расход":
     df_avail = df_inv[df_inv['Остаток'] > 0] if not df_inv.empty else pd.DataFrame()
     
     if not df_avail.empty:
-        # Форматируем строку выпадающего списка с двумя знаками
-        items = df_avail.apply(lambda x: f"ID:{x['id']} | {x['Товар']} ({x['Партия']}) | Доступно: {x['Остаток']:.2f}", axis=1).tolist()
+        scanned_id = None
         
-        col_i1, col_i2, col_i3 = st.columns([3, 1, 1])
-        with col_i1:
-            sel_item = st.selectbox("Выберите товар", items)
-            
-        # Распарсиваем данные выбранного товара
-        b_id = int(float(sel_item.split("|")[0].replace("ID:", "").strip()))
-        item_name = sel_item.split("|")[1].strip()
-        max_stock = float(sel_item.split("Доступно:")[1].strip())
+        # Создаем вкладки: Камера и Ручной поиск
+        tab_cam, tab_list = st.tabs(["📷 Сканировать QR", "🔎 Выбрать из списка"])
         
-        # Защита: проверяем, сколько этого товара УЖЕ лежит в нашей корзине
-        already_in_cart = sum(item['qty'] for item in st.session_state.cart if item['batch_id'] == b_id)
-        available_to_add = max_stock - already_in_cart
-
-        with col_i2:
-            # Ограничиваем ввод максимумом из того, что осталось с учетом корзины
-            qty_out = st.number_input("Количество", min_value=0.1, max_value=max(0.1, available_to_add), step=1.0, value=1.0)
-            
-        with col_i3:
-            st.write("") # Визуальный отступ для выравнивания кнопки
-            st.write("")
-            if st.button("➕ В корзину", use_container_width=True):
-                if available_to_add >= qty_out:
-                    st.session_state.cart.append({
-                        "batch_id": b_id,
-                        "item_name": item_name,
-                        "qty": float(qty_out)
-                    })
-                    st.rerun() # Мгновенно обновляем интерфейс
+        with tab_cam:
+            cam_photo = st.camera_input("Наведите камеру на QR-код")
+            if cam_photo:
+                qr_val = read_qr_from_image(cam_photo)
+                if qr_val:
+                    try:
+                        scanned_id = int(float(str(qr_val).strip()))
+                        st.success(f"✅ Товар распознан! ID: {scanned_id}")
+                    except:
+                        st.error(f"❌ Неверный формат кода: {qr_val}")
                 else:
-                    st.error("Столько товара нет на складе!")
+                    st.warning("QR-код не виден. Попробуйте поднести ближе или улучшить свет.")
+
+        with tab_list:
+            items = df_avail.apply(lambda x: f"ID:{x['id']} | {x['Товар']} ({x['Партия']}) | Ост: {x['Остаток']:.2f}", axis=1).tolist()
+            manual_choice = st.selectbox("Или найдите товар вручную", ["Не выбрано"] + items)
+            if manual_choice != "Не выбрано":
+                scanned_id = int(float(manual_choice.split("|")[0].replace("ID:", "")))
+
+        # Если товар выбран (сканером или списком), показываем поле количества
+        if scanned_id:
+            match = df_avail[df_avail['id'] == scanned_id]
+            if not match.empty:
+                row = match.iloc[0]
+                st.info(f"Выбрано: **{row['Товар']}** (Партия: {row['Партия']})")
+                
+                # Проверка остатка с учетом корзины
+                already_in_cart = sum(item['qty'] for item in st.session_state.cart if item['batch_id'] == scanned_id)
+                available_now = float(row['Остаток']) - already_in_cart
+                
+                col_q1, col_q2 = st.columns([2, 1])
+                with col_q1:
+                    qty_to_add = st.number_input("Введите количество", min_value=0.01, max_value=max(0.01, available_now), step=1.0, value=min(1.0, available_now))
+                with col_q2:
+                    st.write("")
+                    st.write("")
+                    if st.button("➕ Добавить в корзину", use_container_width=True):
+                        st.session_state.cart.append({
+                            "batch_id": scanned_id,
+                            "item_name": row['Товар'],
+                            "qty": round(float(qty_to_add), 2)
+                        })
+                        st.rerun()
+            else:
+                st.error("Этот товар закончился или ID не существует.")
 
         # --- ШАГ 3: ОФОРМЛЕНИЕ КОРЗИНЫ ---
         if st.session_state.cart:
@@ -337,3 +426,4 @@ elif choice == "📈 Аналитика":
     else:
 
         st.info("Данных для анализа пока нет.")
+
