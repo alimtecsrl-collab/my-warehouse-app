@@ -427,21 +427,28 @@ elif choice == "📈 Аналитика":
 
     if not df_t.empty and not df_b.empty:
         # --- 1. БЛОК ПРЕДУПРЕЖДЕНИЙ ---
+        # --- 1. БЛОК ПРЕДУПРЕЖДЕНИЙ (Безопасная версия) ---
         st.subheader("⚠️ Контроль запасов")
         
-        # Объединяем остатки с настройками мин. запаса из таблицы batches
-        # (Убедитесь, что в Google Таблице в листе batches есть колонка min_stock)
+        # Проверяем, есть ли колонка min_stock в df_b. Если нет — создаем её в памяти со значением 5
+        if 'min_stock' not in df_b.columns:
+            df_b['min_stock'] = 5
+        
         df_b['min_stock'] = pd.to_numeric(df_b['min_stock'], errors='coerce').fillna(5)
         df_b['id'] = pd.to_numeric(df_b['id'], errors='coerce')
         
         alerts_df = pd.merge(df_inv, df_b[['id', 'min_stock']], on='id', how='left')
-        critical = alerts_df[alerts_df['Остаток'] <= alerts_df['min_stock']]
         
-        if not critical.empty:
-            st.error(f"Внимание! Закончилось или подходит к концу {len(critical)} товаров:")
-            st.table(critical[['Товар', 'Партия', 'Остаток', 'min_stock']])
+        # Еще раз проверяем наличие колонки в объединенной таблице
+        if 'min_stock' in alerts_df.columns:
+            critical = alerts_df[alerts_df['Остаток'] <= alerts_df['min_stock']]
+            if not critical.empty:
+                st.error(f"Внимание! Закончилось или подходит к концу {len(critical)} товаров:")
+                st.table(critical[['Товар', 'Партия', 'Остаток', 'min_stock']])
+            else:
+                st.success("Всех товаров на складе достаточно.")
         else:
-            st.success("Всех товаров на складе достаточно (выше мин. остатка).")
+            st.warning("Колонка 'min_stock' не найдена. Проверьте заголовки таблицы.")
 
         st.divider()
 
@@ -474,6 +481,7 @@ elif choice == "📈 Аналитика":
 
     else:
         st.info("Данных для финансового анализа пока нет. Проведите первую продажу с указанием цены.")
+
 
 
 
