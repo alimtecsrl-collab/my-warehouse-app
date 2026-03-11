@@ -280,41 +280,79 @@ elif choice == "📤 Расход":
     else: st.warning("Нет товаров.")
 
 elif choice == "📈 Аналитика":
-    st.header("💰 Финансовый отчет (Lei)")
+    st.header("💰 Финансовый отчет (MDL / Lei)")
+    
+    # Загружаем данные
     df_t = get_data("transactions")
     df_b = get_data("batches")
     df_inv = get_inventory()
 
     if not df_t.empty and not df_b.empty:
+        # --- 1. КОНТРОЛЬ ЗАПАСОВ ---
         st.subheader("⚠️ Контроль запасов")
-        df_b['id'] = pd.to_numeric(df_b['id'], errors='coerce')
-        df_b['min_stock'] = pd.to_numeric(df_b['min_stock'], errors='coerce').fillna(5)
-        alerts_df = pd.merge(df_inv, df_b[['id', 'min_stock']], on='id', how='left')
+        
+        # Подготовка данных для мерджа
+        df_b_stock = df_b[['id', 'min_stock']].copy()
+        df_b_stock['id'] = pd.to_numeric(df_b_stock['id'], errors='coerce')
+        
+        # Гарантируем наличие колонки min_stock и заполняем пустоты
+        if 'min_stock' not in df_b_stock.columns:
+            df_b_stock['min_stock'] = 5
+        df_b_stock['min_stock'] = pd.to_numeric(df_b_stock['min_stock'], errors='coerce').fillna(5)
+
+        # Объединяем остатки с минимальными порогами
+        alerts_df = pd.merge(df_inv, df_b_stock, on='id', how='left')
+        
+        # На всякий случай заполняем пустые значения после мерджа
+        alerts_df['min_stock'] = alerts_df['min_stock'].fillna(5)
+
+        # Теперь KeyError исключен, так как колонка точно есть
         critical = alerts_df[alerts_df['Остаток'] <= alerts_df['min_stock']]
+        
         if not critical.empty:
-            st.error(f"Мало товара: {len(critical)} поз.")
-            st.table(critical[['Товар', 'Партия', 'Остаток', 'min_stock']])
-        else: st.success("Запасов достаточно.")
+            st.error(f"Внимание! Закончилось или подходит к концу {len(critical)} товаров:")
+            st.dataframe(critical[['Товар', 'Партия', 'Остаток', 'min_stock']], use_container_width=True)
+        else:
+            st.success("Всех товаров на складе достаточно.")
 
         st.divider()
 
+        # --- 2. РАСЧЕТ ФИНАНСОВ (Lei) ---
+        # Преобразование типов для вычислений
         df_t['quantity'] = pd.to_numeric(df_t['quantity'], errors='coerce').fillna(0)
         df_t['price'] = pd.to_numeric(df_t['price'], errors='coerce').fillna(0)
         df_b['purchase_price'] = pd.to_numeric(df_b['purchase_price'], errors='coerce').fillna(0)
 
+        # Выручка (только продажи OUT)
         sales = df_t[df_t['type'] == 'OUT'].copy()
-        revenue = (sales['quantity'] * sales['price']).sum()
-        cost_data = pd.merge(sales, df_b[['id', 'purchase_price']], left_on='batch_id', right_on='id', how='left')
-        total_cost = (cost_data['quantity'] * cost_data['purchase_price'].fillna(0)).sum()
-        profit = revenue - total_cost
-
-        # Добавляем расчет стоимости текущего склада (активы)
-        stock_val = (df_inv['Остаток'] * pd.to_numeric(df_b.set_index('id')['purchase_price']).reindex(df_inv['id']).fillna(0)).sum()
-
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Выручка", f"{revenue:,.2f} Lei")
-        c2.metric("Себестоимость проданного", f"{total_cost:,.2f} Lei")
-        c3.metric("Прибыль", f"{profit:,.2f} Lei", delta=f"{profit:,.2f} Lei")
         
-        st.info(f"💰 Текущая стоимость товаров на складе: {stock_val:,.2f} Lei")
-    else: st.info("Нет данных.")
+        if not sales.empty:
+            revenue = (sales['quantity'] * sales['price']).sum()
+
+            # Себестоимость: привязываем продажу к закупочной цене партии
+            cost_data = pd.merge(sales, df_b[['id', 'purchase_price']], left_on='batch_id', right_on='id', how='left')
+            total_cost = (cost_data['quantity'] * cost_data['purchase_price'].fillna(0)).sum()
+            
+            profit = revenue - total_cost
+
+            # Карточки в леях
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Общая выручка", f"{revenue:,.2f} Lei")
+            c2.metric("Себестоимость", f"{total_cost:,.2f} Lei")
+            # Отображаем прибыль с цветовым индикатором (delta)
+            c3.metric("Чистая прибыль", f"{profit:,.2f} Lei", delta=f"{profit:,.2f} Lei")
+
+            # График
+            st.subheader("📈 Динамика выручки по дням")
+            daily_rev = sales.groupby('date')['quantity'].apply(lambda x: (x * sales.loc[x.index, 'price']).sum())
+            st.line_chart(daily_rev)
+        else:
+            st.info("Продаж (расходов) еще не зафиксировано. Выручка: 0.00 Lei")
+            
+        # Дополнительно: общая стоимость склада
+        stock_value = (df_inv['Остаток'] * pd.to_numeric(df_b.set_index('id')['purchase_price']).reindex(df_inv['id']).fillna(0)).sum()
+        st.info(f"💰 Текущая оценочная стоимость активов на складе: {stock_value:,.2f} Lei")
+
+    else:
+        st.info("Недостаточно данных для формирования отчета.")
+
