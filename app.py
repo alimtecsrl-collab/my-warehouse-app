@@ -358,7 +358,7 @@ elif choice == "📤 Расход":
             
             # Собираем корзину в таблицу и суммируем одинаковые позиции
             cart_df = pd.DataFrame(st.session_state.cart)
-            display_cart = cart_df.groupby(['batch_id', 'item_name'])['qty'].sum().reset_index()
+            display_cart = cart_df.groupby(['batch_id', 'item_name', 'price'])['qty'].sum().reset_index()
             
             st.dataframe(
                 display_cart[['item_name', 'qty']]
@@ -465,4 +465,5 @@ elif choice == "📈 Аналитика":
 
     else:
         st.info("Данных для финансового анализа пока нет. Проведите первую продажу с указанием цены.")
+
 
