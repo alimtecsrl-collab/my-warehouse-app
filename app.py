@@ -57,14 +57,19 @@ except Exception as e:
 # --- 2. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
 def get_data(sheet_name):
-    """Безопасное чтение данных с проверкой колонок"""
+    """Безdef get_data(sheet_name):
     try:
+        # ttl=0 заставляет программу каждый раз запрашивать свежие данные
         df = conn.read(spreadsheet=SPREADSHEET_URL, worksheet=sheet_name, ttl=0)
         df = df.dropna(how='all')
         
-        # Если таблицы нет или она пустая, создаем пустой DF с нужными колонками
-        if df.empty:
-            return pd.DataFrame(columns=SCHEMAS[sheet_name])
+        # Если колонок нет в загруженном DF, принудительно их добавляем
+        for col in SCHEMAS[sheet_name]:
+            if col not in df.columns:
+                df[col] = 0
+        return df
+    except Exception:
+        return pd.DataFrame(columns=SCHEMAS.get(sheet_name, []))
         
         # --- ВОТ ЭТОТ БЛОК ИСПРАВИТ ОШИБКУ ---
         # Проверяем каждую колонку из схемы. Если её нет в таблице — добавляем пустую.
@@ -481,6 +486,7 @@ elif choice == "📈 Аналитика":
 
     else:
         st.info("Данных для финансового анализа пока нет. Проведите первую продажу с указанием цены.")
+
 
 
 
