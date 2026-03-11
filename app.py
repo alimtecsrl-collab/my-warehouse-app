@@ -57,16 +57,25 @@ except Exception as e:
 # --- 2. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
 def get_data(sheet_name):
-    """Безопасное чтение данных"""
+    """Безопасное чтение данных с проверкой колонок"""
     try:
         df = conn.read(spreadsheet=SPREADSHEET_URL, worksheet=sheet_name, ttl=0)
         df = df.dropna(how='all')
-        if df.empty or not set(SCHEMAS[sheet_name]).issubset(df.columns):
+        
+        # Если таблицы нет или она пустая, создаем пустой DF с нужными колонками
+        if df.empty:
             return pd.DataFrame(columns=SCHEMAS[sheet_name])
+        
+        # --- ВОТ ЭТОТ БЛОК ИСПРАВИТ ОШИБКУ ---
+        # Проверяем каждую колонку из схемы. Если её нет в таблице — добавляем пустую.
+        for col in SCHEMAS[sheet_name]:
+            if col not in df.columns:
+                # Если это финансовые поля или остатки, заполняем нулями, иначе текстом
+                df[col] = 0 if col in ['purchase_price', 'min_stock', 'price'] else ""
+        
         return df
     except Exception:
         return pd.DataFrame(columns=SCHEMAS.get(sheet_name, []))
-
 def safe_update(sheet_name, df):
     """Обновление данных в облаке"""
     try:
@@ -465,5 +474,6 @@ elif choice == "📈 Аналитика":
 
     else:
         st.info("Данных для финансового анализа пока нет. Проведите первую продажу с указанием цены.")
+
 
 
