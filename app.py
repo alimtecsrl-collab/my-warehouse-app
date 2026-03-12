@@ -430,29 +430,24 @@ elif choice == "📈 Аналитика":
     df_inv = get_inventory() # Текущие остатки из вашей функции
 
     if not df_t.empty and not df_b.empty:
-        # --- 1. БЛОК ПРЕДУПРЕЖДЕНИЙ ---
-        # --- 1. БЛОК ПРЕДУПРЕЖДЕНИЙ (Безопасная версия) ---
         st.subheader("⚠️ Контроль запасов")
         
-        # Проверяем, есть ли колонка min_stock в df_b. Если нет — создаем её в памяти со значением 5
-        if 'min_stock' not in df_b.columns:
-            df_b['min_stock'] = 4
+        # Поскольку get_inventory() уже переносит все колонки из batches, 
+        # min_stock УЖЕ находится внутри df_inv. Нам нужно только привести его к числу.
         
-        df_b['min_stock'] = pd.to_numeric(df_b['min_stock'], errors='coerce').fillna(4)
-        df_b['id'] = pd.to_numeric(df_b['id'], errors='coerce')
+        if 'min_stock' not in df_inv.columns:
+            df_inv['min_stock'] = 4
+            
+        df_inv['min_stock'] = pd.to_numeric(df_inv['min_stock'], errors='coerce').fillna(4)
+
+        # Сравниваем остаток с минимальным значением
+        critical = df_inv[df_inv['Остаток'] <= df_inv['min_stock']]
         
-        alerts_df = pd.merge(df_inv, df_b[['id', 'min_stock']], on='id', how='left')
-        
-        # Еще раз проверяем наличие колонки в объединенной таблице
-        if 'min_stock' in alerts_df.columns:
-            critical = alerts_df[alerts_df['Остаток'] <= alerts_df['min_stock']]
-            if not critical.empty:
-                st.error(f"Внимание! Закончилось или подходит к концу {len(critical)} товаров:")
-                st.table(critical[['Товар', 'Партия', 'Остаток', 'min_stock']])
-            else:
-                st.success("Всех товаров на складе достаточно.")
+        if not critical.empty:
+            st.error(f"Внимание! Закончилось или подходит к концу {len(critical)} товаров:")
+            st.table(critical[['Товар', 'Партия', 'Остаток', 'min_stock']])
         else:
-            st.warning("Колонка 'min_stock' не найдена. Проверьте заголовки таблицы.")
+            st.success("Всех товаров на складе достаточно.")
 
         st.divider()
 
@@ -485,9 +480,5 @@ elif choice == "📈 Аналитика":
 
     else:
         st.info("Данных для финансового анализа пока нет. Проведите первую продажу с указанием цены.")
-
-
-
-
 
 
