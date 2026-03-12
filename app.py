@@ -469,9 +469,9 @@ elif choice == "📈 Аналитика":
 
         # Красивые карточки
         col_m1, col_m2, col_m3 = st.columns(3)
-        col_m1.metric("Общая выручка", f"{revenue:,.0f} ₽")
-        col_m2.metric("Себестоимость", f"{total_cost:,.0f} ₽")
-        col_m3.metric("Чистая прибыль", f"{profit:,.0f} ₽", delta=f"{int(profit)} ₽")
+        col_m1.metric("Общая выручка", f"{revenue:,.0f} MDL")
+        col_m2.metric("Себестоимость", f"{total_cost:,.0f} MDL")
+        col_m3.metric("Чистая прибыль", f"{profit:,.0f} MDL", delta=f"{int(profit)} MDL")
 
         # График прибыли по дням
         st.subheader("Динамика прибыли")
@@ -480,5 +480,6 @@ elif choice == "📈 Аналитика":
 
     else:
         st.info("Данных для финансового анализа пока нет. Проведите первую продажу с указанием цены.")
+
 
 
