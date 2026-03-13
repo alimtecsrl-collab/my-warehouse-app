@@ -79,12 +79,12 @@ def safe_update(sheet_name, df):
         return False
 
 def get_inventory():
-    """Расчет текущих остатков"""
+    """Расчет текущих остатков и статуса сроков годности"""
     df_b = get_data("batches")
     df_t = get_data("transactions")
     
     if df_b.empty: 
-        return pd.DataFrame(columns=['id', 'Товар', 'Партия', 'Срок годности', 'Остаток', 'Производитель', 'Сертификат'])
+        return pd.DataFrame(columns=['id', 'Товар', 'Партия', 'Срок годности', 'Статус', 'Остаток', 'Производитель', 'Сертификат'])
     
     df_b['id'] = pd.to_numeric(df_b['id'], errors='coerce')
     
@@ -101,23 +101,26 @@ def get_inventory():
         inventory = df_b.copy()
         inventory['calc_qty'] = 0.0
 
+    # Светофор сроков годности
+    today_date = date.today()
+    statuses = []
+    for exp_str in inventory['expiry_date']:
+        try:
+            exp_d = pd.to_datetime(exp_str).date()
+            days_left = (exp_d - today_date).days
+            if days_left < 0: statuses.append("🔴 Просрочено")
+            elif days_left <= 30: statuses.append("🟡 Скоро")
+            else: statuses.append("🟢 В норме")
+        except:
+            statuses.append("⚪ Ошибка даты")
+    inventory['status'] = statuses
+
     return inventory.rename(columns={
         'product_name': 'Товар', 'batch_number': 'Партия', 
         'expiry_date': 'Срок годности', 'calc_qty': 'Остаток',
-        'manufacturer': 'Производитель', 'certificate_url': 'Сертификат'
+        'manufacturer': 'Производитель', 'certificate_url': 'Сертификат',
+        'status': 'Статус'
     })
-
-def style_inventory(row):
-    """Улучшенная контрастная стилизация"""
-    try:
-        exp = pd.to_datetime(row['Срок годности']).date()
-        days = (exp - date.today()).days
-        if days < 0:
-            return ['background-color: #d32f2f; color: white; font-weight: bold'] * len(row)
-        if days <= 30:
-            return ['background-color: #fbc02d; color: black; font-weight: bold'] * len(row)
-    except: pass
-    return [''] * len(row)
 
 def generate_qr(data_text):
     """Создает QR-код, содержащий только ID"""
@@ -181,12 +184,17 @@ if choice == "📊 Склад":
     df = get_inventory()
     
     if not df.empty:
+        # Умный поиск
+        search_query = st.text_input("🔍 Поиск по названию или партии:", "")
+        if search_query:
+            df = df[df['Товар'].str.contains(search_query, case=False, na=False) | 
+                    df['Партия'].str.contains(search_query, case=False, na=False)]
+
         st.subheader("Выберите товары для печати QR-кодов:")
         df_for_edit = df.copy()
         df_for_edit.insert(0, "Печать", False)
         
-        # Интерактивная таблица (добавлены новые колонки для отображения)
-        display_cols = ['Печать', 'id', 'Товар', 'Партия', 'Срок годности', 'Остаток']
+        display_cols = ['Печать', 'id', 'Товар', 'Партия', 'Срок годности', 'Статус', 'Остаток']
         if 'Производитель' in df_for_edit.columns: display_cols.append('Производитель')
         if 'Сертификат' in df_for_edit.columns: display_cols.append('Сертификат')
 
@@ -195,7 +203,7 @@ if choice == "📊 Склад":
             hide_index=True,
             column_config={
                 "Печать": st.column_config.CheckboxColumn("Печать", default=False),
-                "Сертификат": st.column_config.LinkColumn("Сертификат") # Делаем ссылки кликабельными
+                "Сертификат": st.column_config.LinkColumn("Сертификат") 
             },
             use_container_width=True,
             key="inventory_editor"
@@ -456,6 +464,17 @@ elif choice == "📈 Аналитика":
         st.subheader("Динамика прибыли")
         cost_data['daily_profit'] = (cost_data['quantity'] * cost_data['price']) - (cost_data['quantity'] * cost_data['purchase_price'])
         st.line_chart(cost_data.groupby('date')['daily_profit'].sum())
+
+        # Экспорт в CSV
+        st.markdown("---")
+        st.subheader("💾 Экспорт данных")
+        csv_data = df_inv.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Скачать текущие остатки (CSV)",
+            data=csv_data,
+            file_name=f"ostatki_sklad_{date.today()}.csv",
+            mime="text/csv"
+        )
 
     else:
         st.info("Данных для финансового анализа пока нет. Проведите первую продажу с указанием цены.")
