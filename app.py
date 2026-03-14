@@ -57,8 +57,10 @@ except Exception as e:
 # --- 2. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
 def get_data(sheet_name):
+    """Чтение данных с защитой от спама запросов (ttl=2 секунды кэша)"""
     try:
-        df = conn.read(spreadsheet=SPREADSHEET_URL, worksheet=sheet_name, ttl=0)
+        # ЗАЩИТА 1: ttl=2 дает передышку Google Таблицам
+        df = conn.read(spreadsheet=SPREADSHEET_URL, worksheet=sheet_name, ttl=2)
         df = df.dropna(how='all')
         
         for col in SCHEMAS[sheet_name]:
@@ -69,10 +71,10 @@ def get_data(sheet_name):
         return pd.DataFrame(columns=SCHEMAS.get(sheet_name, []))
 
 def safe_update(sheet_name, df):
-    """Обновление данных в облаке"""
+    """Обновление данных в облаке со сбросом кэша"""
     try:
         conn.update(spreadsheet=SPREADSHEET_URL, worksheet=sheet_name, data=df)
-        st.cache_data.clear()
+        st.cache_data.clear() # Очищаем кэш, чтобы при следующем чтении загрузились свежие данные
         return True
     except Exception as e:
         st.error(f"Ошибка записи: {e}")
@@ -101,7 +103,6 @@ def get_inventory():
         inventory = df_b.copy()
         inventory['calc_qty'] = 0.0
 
-    # Светофор сроков годности
     today_date = date.today()
     statuses = []
     for exp_str in inventory['expiry_date']:
@@ -123,7 +124,6 @@ def get_inventory():
     })
 
 def generate_qr(data_text):
-    """Создает QR-код, содержащий только ID"""
     qr = qrcode.QRCode(version=1, box_size=10, border=2)
     clean_id = str(data_text).split('.')[0]
     qr.add_data(clean_id)
@@ -134,7 +134,6 @@ def generate_qr(data_text):
     return buf.getvalue()
 
 def read_qr_from_image(image_file):
-    """Распознает QR-код с фотографии"""
     try:
         img = Image.open(image_file)
         img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
@@ -145,7 +144,6 @@ def read_qr_from_image(image_file):
         return None
 
 def generate_print_sheet(df_selected):
-    """Собирает выбранные товары на один лист PNG для печати"""
     qr_w, qr_h = 250, 250
     padding = 60
     cols = 3
@@ -184,7 +182,6 @@ if choice == "📊 Склад":
     df = get_inventory()
     
     if not df.empty:
-        # Умный поиск
         search_query = st.text_input("🔍 Поиск по названию или партии:", "")
         if search_query:
             df = df[df['Товар'].str.contains(search_query, case=False, na=False) | 
@@ -254,30 +251,34 @@ elif choice == "📥 Приход":
         manufacturer = st.text_input("Производитель (например, ARNICA FOOD POLAND)")
         cert_link = st.text_input("Ссылка на сертификат качества (Google Drive/URL)", placeholder="https://...")
         
-        if st.form_submit_button("✅ Принять"):
+        # ЗАЩИТА 2: Обернули сохранение в спиннер
+        submitted = st.form_submit_button("✅ Принять")
+        if submitted:
             final_name = p_new if p_sel == "+ Новый товар..." else p_sel
             if final_name and b_num:
-                if p_sel == "+ Новый товар...":
-                    safe_update("products", pd.concat([df_prod, pd.DataFrame([{"name": final_name}])], ignore_index=True))
-                
-                df_b = get_data("batches")
-                new_id = 1 if df_b.empty else int(pd.to_numeric(df_b['id']).max()) + 1
-                
-                new_batch = pd.DataFrame([{"id": new_id, "product_name": final_name, "batch_number": b_num, 
-                                           "expiry_date": str(exp), "purchase_price": p_price, "min_stock": m_stock,
-                                           "manufacturer": manufacturer, "certificate_url": cert_link}])
-                safe_update("batches", pd.concat([df_b, new_batch], ignore_index=True))
-                
-                df_t = get_data("transactions")
-                t_id = 1 if df_t.empty else int(pd.to_numeric(df_t['id']).max()) + 1
-                new_trans = pd.DataFrame([{
-                    "id": t_id, "batch_id": new_id, "type": "IN", "quantity": round(float(qty), 2),
-                    "price": p_price, "buyer": "СКЛАД", "date": str(date.today()), 
-                    "month": date.today().month, "year": date.today().year
-                }])
-                if safe_update("transactions", pd.concat([df_t, new_trans], ignore_index=True)):
-                    st.success("Товар принят!")
-                    time.sleep(1); st.rerun()
+                with st.spinner("⏳ Идет запись в базу данных... Пожалуйста, подождите."):
+                    if p_sel == "+ Новый товар...":
+                        safe_update("products", pd.concat([df_prod, pd.DataFrame([{"name": final_name}])], ignore_index=True))
+                    
+                    df_b = get_data("batches")
+                    new_id = 1 if df_b.empty else int(pd.to_numeric(df_b['id']).max()) + 1
+                    
+                    new_batch = pd.DataFrame([{"id": new_id, "product_name": final_name, "batch_number": b_num, 
+                                               "expiry_date": str(exp), "purchase_price": p_price, "min_stock": m_stock,
+                                               "manufacturer": manufacturer, "certificate_url": cert_link}])
+                    safe_update("batches", pd.concat([df_b, new_batch], ignore_index=True))
+                    
+                    df_t = get_data("transactions")
+                    t_id = 1 if df_t.empty else int(pd.to_numeric(df_t['id']).max()) + 1
+                    new_trans = pd.DataFrame([{
+                        "id": t_id, "batch_id": new_id, "type": "IN", "quantity": round(float(qty), 2),
+                        "price": p_price, "buyer": "СКЛАД", "date": str(date.today()), 
+                        "month": date.today().month, "year": date.today().year
+                    }])
+                    if safe_update("transactions", pd.concat([df_t, new_trans], ignore_index=True)):
+                        st.success("Товар успешно принят!")
+                        time.sleep(1.5) 
+                        st.rerun()
 
 # --- РАЗДЕЛ: РАСХОД ---
 elif choice == "📤 Расход":
@@ -333,148 +334,4 @@ elif choice == "📤 Расход":
                 already_in_cart = sum(item['qty'] for item in st.session_state.cart if item['batch_id'] == scanned_id)
                 available_now = float(row['Остаток']) - already_in_cart
                 
-                col_q1, col_q2 = st.columns([2, 1])
-                with col_q1:
-                    qty_to_add = st.number_input("Введите количество", min_value=0.01, max_value=max(0.01, available_now), step=1.0, value=min(1.0, available_now))
-                    sell_price = st.number_input("Цена продажи (за 1 ед.)", min_value=0.0, value=0.0, step=10.0)
-                    
-                    with col_q2:
-                        st.write("")
-                        st.write("")
-                        if st.button("➕ Добавить в корзину", use_container_width=True):
-                            st.session_state.cart.append({
-                                "batch_id": scanned_id,
-                                "item_name": row['Товар'],
-                                "qty": round(float(qty_to_add), 2),
-                                "price": sell_price
-                            })
-                            st.rerun()
-            else:
-                st.error("Этот товар закончился или ID не существует.")
-
-        if st.session_state.cart:
-            st.markdown("---")
-            st.subheader(f"🛒 Заказ для: {final_client if final_client else '⚠️ Клиент не указан'}")
-            
-            cart_df = pd.DataFrame(st.session_state.cart)
-            display_cart = cart_df.groupby(['batch_id', 'item_name', 'price'])['qty'].sum().reset_index()
-            
-            st.dataframe(
-                display_cart[['item_name', 'qty']]
-                .rename(columns={"item_name": "Товар", "qty": "Количество"})
-                .style.format({"Количество": "{:.2f}"}),
-                use_container_width=True
-            )
-
-            col_b1, col_b2 = st.columns(2)
-            with col_b1:
-                if st.button("🔥 Провести списание", type="primary", use_container_width=True):
-                    if not final_client:
-                        st.error("Укажите имя клиента перед оформлением!")
-                    else:
-                        if c_sel == "+ Новый клиент...":
-                            safe_update("clients", pd.concat([df_clients, pd.DataFrame([{"name": final_client}])], ignore_index=True))
-
-                        df_t = get_data("transactions")
-                        t_id_start = 1 if df_t.empty else int(pd.to_numeric(df_t['id']).max()) + 1
-                        
-                        new_transactions = []
-                        for i, row in display_cart.iterrows():
-                            new_transactions.append({
-                                "id": t_id_start + i,
-                                "batch_id": row['batch_id'],
-                                "type": "OUT",
-                                "quantity": round(float(row['qty']), 2),
-                                "price": row['price'],
-                                "buyer": final_client,
-                                "date": str(date.today()),
-                                "month": date.today().month,
-                                "year": date.today().year
-                            })
-                            
-                        if safe_update("transactions", pd.concat([df_t, pd.DataFrame(new_transactions)], ignore_index=True)):
-                            st.success(f"Заказ оформлен! Списано позиций: {len(new_transactions)}")
-                            st.session_state.cart = []
-                            time.sleep(1.5)
-                            st.rerun()
-
-            with col_b2:
-                if st.button("🗑 Очистить корзину", use_container_width=True):
-                    st.session_state.cart = []
-                    st.rerun()
-    else:
-        st.warning("Нет товаров в наличии.")
-
-# --- РАЗДЕЛ: АНАЛИТИКА ---
-elif choice == "📈 Аналитика":
-    st.header("💰 Финансовый отчет и остатки")
-    df_t = get_data("transactions")
-    df_b = get_data("batches")
-    df_inv = get_inventory() 
-
-    if not df_t.empty and not df_b.empty:
-        st.subheader("⚠️ Контроль запасов")
-        
-        if 'min_stock' not in df_inv.columns:
-            df_inv['min_stock'] = 4
-            
-        df_inv['min_stock'] = pd.to_numeric(df_inv['min_stock'], errors='coerce').fillna(4)
-
-        critical = df_inv[df_inv['Остаток'] <= df_inv['min_stock']]
-        
-        if not critical.empty:
-            st.error(f"Внимание! Закончилось или подходит к концу {len(critical)} товаров:")
-            display_cols_alert = ['Товар', 'Партия', 'Остаток', 'min_stock']
-            if 'Производитель' in critical.columns:
-                display_cols_alert.append('Производитель')
-            st.table(critical[display_cols_alert])
-        else:
-            st.success("Всех товаров на складе достаточно.")
-
-        st.divider()
-
-        # ФИЛЬТР ПО ДАТАМ
-        st.subheader("📅 Фильтр периода")
-        col_d1, col_d2 = st.columns(2)
-        start_date = col_d1.date_input("Начало периода", date.today() - timedelta(days=30))
-        end_date = col_d2.date_input("Конец периода", date.today())
-
-        df_t['date_obj'] = pd.to_datetime(df_t['date']).dt.date
-        mask = (df_t['date_obj'] >= start_date) & (df_t['date_obj'] <= end_date)
-        df_t_filtered = df_t.loc[mask].copy()
-
-        # РАСЧЕТ ДЕНЕГ
-        df_t_filtered['quantity'] = pd.to_numeric(df_t_filtered['quantity'], errors='coerce').fillna(0)
-        df_t_filtered['price'] = pd.to_numeric(df_t_filtered['price'], errors='coerce').fillna(0)
-        df_b['purchase_price'] = pd.to_numeric(df_b['purchase_price'], errors='coerce').fillna(0)
-
-        sales = df_t_filtered[df_t_filtered['type'] == 'OUT'].copy()
-        revenue = (sales['quantity'] * sales['price']).sum()
-
-        cost_data = pd.merge(sales, df_b[['id', 'purchase_price']], left_on='batch_id', right_on='id', how='left')
-        total_cost = (cost_data['quantity'] * cost_data['purchase_price']).sum()
-        
-        profit = revenue - total_cost
-
-        col_m1, col_m2, col_m3 = st.columns(3)
-        col_m1.metric("Общая выручка", f"{revenue:,.0f} MDL")
-        col_m2.metric("Себестоимость", f"{total_cost:,.0f} MDL")
-        col_m3.metric("Чистая прибыль", f"{profit:,.0f} MDL", delta=f"{int(profit)} MDL")
-
-        st.subheader("Динамика прибыли")
-        cost_data['daily_profit'] = (cost_data['quantity'] * cost_data['price']) - (cost_data['quantity'] * cost_data['purchase_price'])
-        st.line_chart(cost_data.groupby('date')['daily_profit'].sum())
-
-        # Экспорт в CSV
-        st.markdown("---")
-        st.subheader("💾 Экспорт данных")
-        csv_data = df_inv.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="📥 Скачать текущие остатки (CSV)",
-            data=csv_data,
-            file_name=f"ostatki_sklad_{date.today()}.csv",
-            mime="text/csv"
-        )
-
-    else:
-        st.info("Данных для финансового анализа пока нет. Проведите первую продажу с указанием цены.")
+                col_q1,
