@@ -329,7 +329,20 @@ elif choice == "📤 Расход":
                 
                 col_q1, col_q2 = st.columns([2, 1])
                 with col_q1:
-                    qty_to_add = st.number_input("Введите количество", min_value=0.01, max_value=max(0.01, available_now), step=1.0, value=min(1.0, available_now))
+                    # Безопасный расчет параметров:
+                    # Убеждаемся, что значение по умолчанию не меньше минимума и не больше максимума
+                    safe_min = 0.01
+                    safe_max = max(safe_min, float(available_now))
+                    safe_value = min(max(safe_min, 1.0), safe_max)
+
+                    qty_to_add = st.number_input(
+                        "Введите количество", 
+                        min_value=safe_min, 
+                        max_value=safe_max, 
+                        step=1.0, 
+                        value=safe_value
+                    )
+                    
                     sell_price = st.number_input("Цена продажи (за 1 ед.)", min_value=0.0, value=0.0, step=10.0)
                     
                     with col_q2:
