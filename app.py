@@ -173,10 +173,19 @@ if choice == "📊 Склад":
     df = get_inventory()
     
     if not df.empty:
-        search_query = st.text_input("🔍 Поиск по названию или партии:", "")
-        if search_query:
-            df = df[df['Товар'].str.contains(search_query, case=False, na=False) | 
-                    df['Партия'].str.contains(search_query, case=False, na=False)]
+        # СКРЫВАЕМ ПУСТЫЕ ПАРТИИ: Оставляем только то, что > 0
+        df = df[df['Остаток'] > 0]
+        
+        # Проверяем снова, не стал ли список пустым после фильтрации
+        if df.empty:
+            st.info("На складе нет товаров с остатком больше нуля.")
+        else:
+            search_query = st.text_input("🔍 Поиск по названию или партии:", "")
+            if search_query:
+                df = df[df['Товар'].str.contains(search_query, case=False, na=False) | 
+                        df['Партия'].str.contains(search_query, case=False, na=False)]
+
+            
 
         st.subheader("Выберите товары для печати QR-кодов:")
         df_for_edit = df.copy()
