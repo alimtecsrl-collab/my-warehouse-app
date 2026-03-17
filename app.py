@@ -21,7 +21,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# Упрощенная структура таблиц
+# Упрощенная структура таблиц (без производителей и сертификатов)
 SCHEMAS = {
     "batches": ["id", "product_name", "batch_number", "expiry_date", "purchase_price", "min_stock"],
     "transactions": ["id", "batch_id", "type", "quantity", "price", "buyer", "date", "month", "year"],
@@ -173,57 +173,54 @@ if choice == "📊 Склад":
     df = get_inventory()
     
     if not df.empty:
-        # СКРЫВАЕМ ПУСТЫЕ ПАРТИИ: Оставляем только то, что > 0
+        # Фильтр: показываем только товары, которые есть в наличии (>0)
         df = df[df['Остаток'] > 0]
         
-        # Проверяем снова, не стал ли список пустым после фильтрации
         if df.empty:
-            st.info("На складе нет товаров с остатком больше нуля.")
+            st.info("На складе нет товаров в наличии (все остатки равны 0).")
         else:
             search_query = st.text_input("🔍 Поиск по названию или партии:", "")
             if search_query:
                 df = df[df['Товар'].str.contains(search_query, case=False, na=False) | 
                         df['Партия'].str.contains(search_query, case=False, na=False)]
 
+            st.subheader("Выберите товары для печати QR-кодов:")
+            df_for_edit = df.copy()
+            df_for_edit.insert(0, "Печать", False)
+            df_for_edit['Печать'] = df_for_edit['Печать'].astype(bool) 
             
+            display_cols = ['Печать', 'id', 'Товар', 'Партия', 'Срок годности', 'Статус', 'Остаток']
+            
+            edited_df = st.data_editor(
+                df_for_edit[display_cols],
+                hide_index=True,
+                column_config={"Печать": st.column_config.CheckboxColumn("Печать", default=False)},
+                use_container_width=True,
+                key="inventory_editor"
+            )
+            
+            to_print = edited_df[edited_df["Печать"] == True]
+            
+            if not to_print.empty:
+                if st.button(f"📄 Сформировать лист QR для {len(to_print)} поз.", type="primary"):
+                    sheet = generate_print_sheet(to_print)
+                    st.image(sheet, caption="Лист для печати")
+                    st.download_button("📥 Скачать файл для печати", data=sheet, file_name=f"qr_labels_{date.today()}.png")
 
-        st.subheader("Выберите товары для печати QR-кодов:")
-        df_for_edit = df.copy()
-        df_for_edit.insert(0, "Печать", False)
-        df_for_edit['Печать'] = df_for_edit['Печать'].astype(bool) 
-        
-        display_cols = ['Печать', 'id', 'Товар', 'Партия', 'Срок годности', 'Статус', 'Остаток']
-        
-        edited_df = st.data_editor(
-            df_for_edit[display_cols],
-            hide_index=True,
-            column_config={"Печать": st.column_config.CheckboxColumn("Печать", default=False)},
-            use_container_width=True,
-            key="inventory_editor"
-        )
-        
-        to_print = edited_df[edited_df["Печать"] == True]
-        
-        if not to_print.empty:
-            if st.button(f"📄 Сформировать лист QR для {len(to_print)} поз.", type="primary"):
-                sheet = generate_print_sheet(to_print)
-                st.image(sheet, caption="Лист для печати")
-                st.download_button("📥 Скачать файл для печати", data=sheet, file_name=f"qr_labels_{date.today()}.png")
-
-        st.markdown("---")
-        if st.button("📢 Отправить отчет о сроках в Telegram"):
-            today = date.today()
-            alerts = []
-            for _, r in df.iterrows():
-                try:
-                    exp = pd.to_datetime(r['Срок годности']).date()
-                    if r['Остаток'] > 0 and (exp - today).days <= 30:
-                        icon = "🚨" if exp < today else "⚠️"
-                        alerts.append(f"{icon} *{r['Товар']}* ({r['Партия']})\nОстаток: {r['Остаток']} | До: {exp}")
-                except: continue
-            if alerts and bot:
-                bot.send_message(TELEGRAM_CHAT_ID, "🛑 *ВНИМАНИЕ: СРОКИ!*\n\n" + "\n\n".join(alerts), parse_mode="Markdown")
-                st.success("Отчет отправлен!")
+            st.markdown("---")
+            if st.button("📢 Отправить отчет о сроках в Telegram"):
+                today = date.today()
+                alerts = []
+                for _, r in df.iterrows():
+                    try:
+                        exp = pd.to_datetime(r['Срок годности']).date()
+                        if r['Остаток'] > 0 and (exp - today).days <= 30:
+                            icon = "🚨" if exp < today else "⚠️"
+                            alerts.append(f"{icon} *{r['Товар']}* ({r['Партия']})\nОстаток: {r['Остаток']} | До: {exp}")
+                    except: continue
+                if alerts and bot:
+                    bot.send_message(TELEGRAM_CHAT_ID, "🛑 *ВНИМАНИЕ: СРОКИ!*\n\n" + "\n\n".join(alerts), parse_mode="Markdown")
+                    st.success("Отчет отправлен!")
     else:
         st.info("На складе пока ничего нет.")
 
@@ -233,7 +230,6 @@ elif choice == "📥 Приход":
     df_prod = get_data("products")
     options = ["+ Новый товар..."] + (df_prod['name'].tolist() if not df_prod.empty else [])
     
-    # st.form собирает данные и отправляет их ТОЛЬКО по нажатию submit_button
     with st.form("in_form", clear_on_submit=True):
         p_sel = st.selectbox("Товар", options)
         p_new = st.text_input("Название (если новый)")
@@ -277,7 +273,6 @@ elif choice == "📥 Приход":
 elif choice == "📤 Расход":
     st.header("💸 Расход (Продажа)")
     
-    # Корзина работает как буфер: данные лежат в памяти устройства, пока не нажата кнопка "Провести продажу"
     if 'cart' not in st.session_state:
         st.session_state.cart = []
 
@@ -329,8 +324,7 @@ elif choice == "📤 Расход":
                 
                 col_q1, col_q2 = st.columns([2, 1])
                 with col_q1:
-                    # Безопасный расчет параметров:
-                    # Убеждаемся, что значение по умолчанию не меньше минимума и не больше максимума
+                    # Фикс ошибки StreamlitValueBelowMinError
                     safe_min = 0.01
                     safe_max = max(safe_min, float(available_now))
                     safe_value = min(max(safe_min, 1.0), safe_max)
@@ -342,7 +336,6 @@ elif choice == "📤 Расход":
                         step=1.0, 
                         value=safe_value
                     )
-                    
                     sell_price = st.number_input("Цена продажи (за 1 ед.)", min_value=0.0, value=0.0, step=10.0)
                     
                     with col_q2:
@@ -421,27 +414,22 @@ elif choice == "📈 Аналитика":
     df_inv = get_inventory() 
 
     if not df_t.empty and not df_b.empty:
-        # 1. Фильтры
         st.subheader("⚙️ Фильтры отчета")
         col_f1, col_f2, col_f3 = st.columns(3)
         
         start_date = col_f1.date_input("Начало периода", date.today() - timedelta(days=30))
         end_date = col_f2.date_input("Конец периода", date.today())
         
-        # Получаем список всех клиентов, кому были продажи
         buyers_list = ["Все клиенты"] + sorted(df_t[df_t['type'] == 'OUT']['buyer'].dropna().unique().astype(str).tolist())
         selected_buyer = col_f3.selectbox("Клиент", buyers_list)
 
-        # Применяем фильтр по дате
         df_t['date_obj'] = pd.to_datetime(df_t['date']).dt.date
         mask_date = (df_t['date_obj'] >= start_date) & (df_t['date_obj'] <= end_date)
         df_t_filtered = df_t.loc[mask_date].copy()
 
-        # Применяем фильтр по клиенту (если выбран не "Все")
         if selected_buyer != "Все клиенты":
             df_t_filtered = df_t_filtered[df_t_filtered['buyer'] == selected_buyer]
 
-        # 2. Финансовые показатели
         st.markdown("---")
         df_t_filtered['quantity'] = pd.to_numeric(df_t_filtered['quantity'], errors='coerce').fillna(0)
         df_t_filtered['price'] = pd.to_numeric(df_t_filtered['price'], errors='coerce').fillna(0)
@@ -465,7 +453,6 @@ elif choice == "📈 Аналитика":
         col_m2.metric("Себестоимость", f"{total_cost:,.0f} MDL")
         col_m3.metric("Чистая прибыль", f"{profit:,.0f} MDL", delta=f"{int(profit)} MDL")
 
-        # 3. График
         if not sales.empty and 'cost_data' in locals():
             st.subheader(f"Динамика прибыли: {selected_buyer}")
             cost_data['daily_profit'] = (cost_data['quantity'] * cost_data['price']) - (cost_data['quantity'] * cost_data['purchase_price'])
@@ -476,9 +463,10 @@ elif choice == "📈 Аналитика":
         st.markdown("---")
         st.subheader("💾 Экспорт и Контроль")
         
-        # Контроль запасов
         if 'min_stock' not in df_inv.columns: df_inv['min_stock'] = 4
         df_inv['min_stock'] = pd.to_numeric(df_inv['min_stock'], errors='coerce').fillna(4)
+        
+        # Для контроля запасов берем только те товары, которые вообще еще есть в списке (включая остаток 0)
         critical = df_inv[df_inv['Остаток'] <= df_inv['min_stock']]
         
         if not critical.empty:
@@ -487,7 +475,6 @@ elif choice == "📈 Аналитика":
         else:
             st.success("Всех товаров на складе достаточно.")
 
-        # Экспорт
         csv_data = df_inv.to_csv(index=False).encode('utf-8')
         st.download_button(
             label="📥 Скачать текущие остатки склада (CSV)",
