@@ -185,9 +185,9 @@ if choice == "📊 Склад":
                 df = df[df['Товар'].str.contains(search_query, case=False, na=False) | 
                         df['Партия'].str.contains(search_query, case=False, na=False)]
                     
-                st.subheader("Выберите товары для печати QR-кодов:")
+            st.subheader("Выберите товары для печати QR-кодов:")
             # ... далее код без изменений ...
-                  
+        st.subheader("Выберите товары для печати QR-кодов:")          
         df_for_edit = df.copy()
         df_for_edit.insert(0, "Печать", False)
         df_for_edit['Печать'] = df_for_edit['Печать'].astype(bool) 
