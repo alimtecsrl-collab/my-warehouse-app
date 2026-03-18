@@ -414,7 +414,33 @@ elif choice == "📈 Аналитика":
     df_inv = get_inventory() 
 
     if not df_t.empty and not df_b.empty:
-        st.subheader("⚙️ Фильтры отчета")
+        
+        # --- СКРЫТИЕ ПУСТЫХ ПАРТИЙ ---
+        # Оставляем только те товары, которые физически есть на складе
+        if not df_inv.empty:
+            df_inv = df_inv[df_inv['Остаток'] > 0]
+
+        # --- НОВЫЙ БЛОК: ТЕКУЩИЕ ОСТАТКИ В КГ И ДЕНЬГАХ ---
+        st.subheader("📦 Текущее состояние склада")
+        
+        if not df_inv.empty:
+            total_kg = df_inv['Остаток'].sum()
+            # Убеждаемся, что цены закупки — это числа
+            df_inv['purchase_price'] = pd.to_numeric(df_inv['purchase_price'], errors='coerce').fillna(0)
+            # Считаем стоимость остатков (Остаток * Цена закупки)
+            total_value = (df_inv['Остаток'] * df_inv['purchase_price']).sum()
+        else:
+            total_kg = 0
+            total_value = 0
+
+        col_w1, col_w2 = st.columns(2)
+        col_w1.metric("Всего товара в наличии", f"{total_kg:,.2f} кг")
+        col_w2.metric("Стоимость товара на складе", f"{total_value:,.0f} MDL")
+        
+        st.markdown("---")
+
+        # --- ФИНАНСОВЫЙ ОТЧЕТ ПО ПРОДАЖАМ ---
+        st.subheader("⚙️ Фильтры отчета по продажам")
         col_f1, col_f2, col_f3 = st.columns(3)
         
         start_date = col_f1.date_input("Начало периода", date.today() - timedelta(days=30))
@@ -449,8 +475,8 @@ elif choice == "📈 Аналитика":
             revenue, total_cost, profit = 0, 0, 0
 
         col_m1, col_m2, col_m3 = st.columns(3)
-        col_m1.metric("Общая выручка", f"{revenue:,.0f} MDL")
-        col_m2.metric("Себестоимость", f"{total_cost:,.0f} MDL")
+        col_m1.metric("Выручка за период", f"{revenue:,.0f} MDL")
+        col_m2.metric("Себестоимость проданного", f"{total_cost:,.0f} MDL")
         col_m3.metric("Чистая прибыль", f"{profit:,.0f} MDL", delta=f"{int(profit)} MDL")
 
         if not sales.empty and 'cost_data' in locals():
@@ -466,7 +492,7 @@ elif choice == "📈 Аналитика":
         if 'min_stock' not in df_inv.columns: df_inv['min_stock'] = 4
         df_inv['min_stock'] = pd.to_numeric(df_inv['min_stock'], errors='coerce').fillna(4)
         
-        # Для контроля запасов берем только те товары, которые вообще еще есть в списке (включая остаток 0)
+        # Теперь сюда попадают только товары, которые реально есть на складе (>0)
         critical = df_inv[df_inv['Остаток'] <= df_inv['min_stock']]
         
         if not critical.empty:
